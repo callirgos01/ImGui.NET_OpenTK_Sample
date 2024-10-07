@@ -1,4 +1,4 @@
-﻿using ImGuiNET;
+﻿using Hexa.NET.ImGui;
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
@@ -56,7 +56,7 @@ namespace Dear_ImGui_Sample
 
             CompatibilityProfile = (GL.GetInteger((GetPName)All.ContextProfileMask) & (int)All.ContextCompatibilityProfileBit) != 0;
 
-            IntPtr context = ImGui.CreateContext();
+            ImGuiContextPtr context = ImGui.CreateContext();
             ImGui.SetCurrentContext(context);
             var io = ImGui.GetIO();
             io.Fonts.AddFontDefault();
@@ -161,12 +161,19 @@ void main()
         /// <summary>
         /// Recreates the device texture used to render text.
         /// </summary>
-        public void RecreateFontDeviceTexture()
+        public unsafe void RecreateFontDeviceTexture()
         {
             ImGuiIOPtr io = ImGui.GetIO();
-            io.Fonts.GetTexDataAsRGBA32(out IntPtr pixels, out int width, out int height, out int bytesPerPixel);
+            var pp = new IntPtr();
+            var pw = default(int);
+            var ph = default(int);
+            var ps = default(int);
 
-            int mips = (int)Math.Floor(Math.Log(Math.Max(width, height), 2));
+            var pointer = Unsafe.AsPointer(ref pp);
+
+            io.Fonts.GetTexDataAsRGBA32((byte**)pointer, ref pw, ref ph, ref ps);
+
+            int mips = (int)Math.Floor(Math.Log(Math.Max(pw, ph), 2));
 
             int prevActiveTexture = GL.GetInteger(GetPName.ActiveTexture);
             GL.ActiveTexture(TextureUnit.Texture0);
@@ -174,10 +181,10 @@ void main()
 
             _fontTexture = GL.GenTexture();
             GL.BindTexture(TextureTarget.Texture2D, _fontTexture);
-            GL.TexStorage2D(TextureTarget2d.Texture2D, mips, SizedInternalFormat.Rgba8, width, height);
+            GL.TexStorage2D(TextureTarget2d.Texture2D, mips, SizedInternalFormat.Rgba8, pw, ph);
             LabelObject(ObjectLabelIdentifier.Texture, _fontTexture, "ImGui Text Atlas");
 
-            GL.TexSubImage2D(TextureTarget.Texture2D, 0, 0, 0, width, height, PixelFormat.Bgra, PixelType.UnsignedByte, pixels);
+            GL.TexSubImage2D(TextureTarget.Texture2D, 0, 0, 0, pw, ph, PixelFormat.Bgra, PixelType.UnsignedByte, pp);
 
             GL.GenerateMipmap(GenerateMipmapTarget.Texture2D);
 
@@ -295,7 +302,7 @@ void main()
             io.MouseWheelH = offset.X;
         }
 
-        private void RenderImDrawData(ImDrawDataPtr draw_data)
+        private unsafe void RenderImDrawData(ImDrawDataPtr draw_data)
         {
             if (draw_data.CmdListsCount == 0)
             {
@@ -404,44 +411,59 @@ void main()
             GL.Disable(EnableCap.DepthTest);
 
             // Render command lists
-            for (int n = 0; n < draw_data.CmdListsCount; n++)
-            {
-                ImDrawListPtr cmd_list = draw_data.CmdLists[n];
 
-                GL.BufferSubData(BufferTarget.ArrayBuffer, IntPtr.Zero, cmd_list.VtxBuffer.Size * Unsafe.SizeOf<ImDrawVert>(), cmd_list.VtxBuffer.Data);
+            var count = draw_data.CmdListsCount;
+            var DrawLists = draw_data.CmdLists;
+
+
+            for (int n = 0; n < count; n++)
+            {
+                var list = DrawLists[n];
+
+                var vtxBuffer = list.VtxBuffer;
+                var idxBuffer = list.IdxBuffer;
+
+                var vtxBufferSize = vtxBuffer.Size * sizeof(ImDrawVert);
+                var idxBufferSize = idxBuffer.Size * sizeof(ushort);
+
+                GL.BufferSubData(BufferTarget.ArrayBuffer, IntPtr.Zero, vtxBufferSize, (IntPtr)vtxBuffer.Data);
                 CheckGLError($"Data Vert {n}");
 
-                GL.BufferSubData(BufferTarget.ElementArrayBuffer, IntPtr.Zero, cmd_list.IdxBuffer.Size * sizeof(ushort), cmd_list.IdxBuffer.Data);
+                GL.BufferSubData(BufferTarget.ElementArrayBuffer, IntPtr.Zero, idxBufferSize, (IntPtr)idxBuffer.Data);
                 CheckGLError($"Data Idx {n}");
 
-                for (int cmd_i = 0; cmd_i < cmd_list.CmdBuffer.Size; cmd_i++)
+                for (var j = 0; j < list.CmdBuffer.Size; j++)
                 {
-                    ImDrawCmdPtr pcmd = cmd_list.CmdBuffer[cmd_i];
+                    ImDrawCmd cmd = list.CmdBuffer[j];
+                    /*
                     if (pcmd.UserCallback != IntPtr.Zero)
                     {
                         throw new NotImplementedException();
                     }
                     else
+                    {*/
+                    GL.ActiveTexture(TextureUnit.Texture0);
+                    GL.BindTexture(TextureTarget.Texture2D, (int)cmd.TextureId.Handle);
+                    CheckGLError("Texture");
+
+                    // We do _windowHeight - (int)clip.W instead of (int)clip.Y because gl has flipped Y when it comes to these coordinates
+                    var clip = cmd.ClipRect;
+                    GL.Scissor((int)clip.X, _windowHeight - (int)clip.W, (int)(clip.Z - clip.X), (int)(clip.W - clip.Y));
+                    CheckGLError("Scissor");
+
+                    var length = (int)cmd.ElemCount;
+                    var offset = cmd.IdxOffset * sizeof(ushort);
+
+                    if ((io.BackendFlags & ImGuiBackendFlags.RendererHasVtxOffset) != 0)
                     {
-                        GL.ActiveTexture(TextureUnit.Texture0);
-                        GL.BindTexture(TextureTarget.Texture2D, (int)pcmd.TextureId);
-                        CheckGLError("Texture");
-
-                        // We do _windowHeight - (int)clip.W instead of (int)clip.Y because gl has flipped Y when it comes to these coordinates
-                        var clip = pcmd.ClipRect;
-                        GL.Scissor((int)clip.X, _windowHeight - (int)clip.W, (int)(clip.Z - clip.X), (int)(clip.W - clip.Y));
-                        CheckGLError("Scissor");
-
-                        if ((io.BackendFlags & ImGuiBackendFlags.RendererHasVtxOffset) != 0)
-                        {
-                            GL.DrawElementsBaseVertex(PrimitiveType.Triangles, (int)pcmd.ElemCount, DrawElementsType.UnsignedShort, (IntPtr)(pcmd.IdxOffset * sizeof(ushort)), unchecked((int)pcmd.VtxOffset));
-                        }
-                        else
-                        {
-                            GL.DrawElements(BeginMode.Triangles, (int)pcmd.ElemCount, DrawElementsType.UnsignedShort, (int)pcmd.IdxOffset * sizeof(ushort));
-                        }
-                        CheckGLError("Draw");
+                        GL.DrawElementsBaseVertex(PrimitiveType.Triangles, (int)cmd.ElemCount, DrawElementsType.UnsignedShort, (IntPtr)(cmd.IdxOffset * sizeof(ushort)), unchecked((int)cmd.VtxOffset));
                     }
+                    else
+                    {
+                        GL.DrawElements(BeginMode.Triangles, (int)cmd.ElemCount, DrawElementsType.UnsignedShort, (int)cmd.IdxOffset * sizeof(ushort));
+                    }
+                    CheckGLError("Draw");
+                    //}
                 }
             }
 
@@ -567,7 +589,7 @@ void main()
         public static ImGuiKey TranslateKey(Keys key)
         {
             if (key >= Keys.D0 && key <= Keys.D9)
-                return key - Keys.D0 + ImGuiKey._0;
+                return key - Keys.D0 + (ImGuiKey)536;
 
             if (key >= Keys.A && key <= Keys.Z)
                 return key - Keys.A + ImGuiKey.A;

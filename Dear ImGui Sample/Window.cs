@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using ImGuiNET;
+using Hexa.NET.ImGui;
 using System.Drawing;
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
